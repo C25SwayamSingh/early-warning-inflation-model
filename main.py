@@ -133,7 +133,7 @@ class InflationEarlyWarningModel:
 
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
-        timeframe_str = "today 5-y"
+        timeframe_str = f'{start_dt.strftime("%Y-%m-%d")} {end_dt.strftime("%Y-%m-%d")}'
 
         cache_dir = Path("data/google_trends_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -331,88 +331,132 @@ class InflationEarlyWarningModel:
         
         return corr_df
     
-    def visualize_correlations(self, save_path='correlation_analysis.png'):
+    def visualize_correlations(self, save_path='results/fig_corr_heatmap_scatter.png'):
         """
-        Create visualizations of correlations and time series.
-        
-        Args:
-            save_path: Path to save the visualization
+        Create two visuals: (1) correlation heatmap (CPI vs Trends),
+        (2) best-pair scatter. Saves a single 2-panel PNG.
         """
         if self.merged_data is None:
             raise ValueError("Data must be merged before visualization")
-        
-        print(f"\nCreating visualizations...")
-        
-        # Get trend columns
+
+        results_path = Path(save_path)
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+
         trend_cols = [col for col in self.merged_data.columns if '_trend' in col]
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(3, 1, figsize=(14, 12))
-        
-        # 1. Time series plot
-        ax1 = axes[0]
-        ax1_twin = ax1.twinx()
-        
-        # Plot CPI YoY change
-        ax1.plot(self.merged_data.index, self.merged_data['CPI_YoY'], 
-                'b-', linewidth=2, label='CPI YoY % Change')
-        ax1.set_ylabel('CPI Year-over-Year % Change', color='b', fontsize=10)
-        ax1.tick_params(axis='y', labelcolor='b')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_title('CPI vs Google Trends Over Time', fontsize=12, fontweight='bold')
-        
-        # Plot normalized trends (for comparison)
-        for trend_col in trend_cols:
-            normalized = (self.merged_data[trend_col] - self.merged_data[trend_col].min()) / \
-                        (self.merged_data[trend_col].max() - self.merged_data[trend_col].min()) * 10
-            ax1_twin.plot(self.merged_data.index, normalized, 
-                         alpha=0.6, label=trend_col.replace('_trend', ''))
-        
-        ax1_twin.set_ylabel('Normalized Search Interest (0-10 scale)', color='g', fontsize=10)
-        ax1_twin.tick_params(axis='y', labelcolor='g')
-        ax1.legend(loc='upper left')
-        ax1_twin.legend(loc='upper right')
-        
-        # 2. Correlation heatmap
-        ax2 = axes[1]
+
+        fig, axes = plt.subplots(2, 1, figsize=(14, 9))
+
+        # 1) Correlation heatmap (top)
+        ax_hm = axes[0]
         corr_data = self.merged_data[['CPI_MoM', 'CPI_YoY'] + trend_cols].corr()
         corr_subset = corr_data.loc[['CPI_MoM', 'CPI_YoY'], trend_cols]
-        
-        sns.heatmap(corr_subset, annot=True, fmt='.3f', cmap='RdYlBu_r', 
-                   center=0, vmin=-1, vmax=1, ax=ax2, cbar_kws={'label': 'Correlation'})
-        ax2.set_title('Correlation Matrix: CPI Changes vs Google Trends', 
-                     fontsize=12, fontweight='bold')
-        ax2.set_ylabel('CPI Metrics')
-        ax2.set_xlabel('Google Trends Search Terms')
-        
-        # 3. Scatter plots for top correlations
-        ax3 = axes[2]
-        
-        # Find the trend with highest absolute correlation with CPI_YoY
+
+        sns.heatmap(
+            corr_subset,
+            annot=True,
+            fmt='.3f',
+            cmap='RdYlBu_r',
+            center=0,
+            vmin=-1,
+            vmax=1,
+            ax=ax_hm,
+            cbar_kws={'label': 'Correlation'}
+        )
+        ax_hm.set_title('Correlation: CPI Changes vs Google Trends', fontsize=12, fontweight='bold')
+        ax_hm.set_ylabel('CPI Metrics')
+        ax_hm.set_xlabel('Google Trends Search Terms')
+
+        # 2) Best-pair scatter (bottom)
+        ax_sc = axes[1]
         corr_with_yoy = self.merged_data[trend_cols].corrwith(self.merged_data['CPI_YoY'])
         best_trend = corr_with_yoy.abs().idxmax()
-        
-        ax3.scatter(self.merged_data[best_trend], self.merged_data['CPI_YoY'], 
-                   alpha=0.6, s=50)
-        ax3.set_xlabel(f'{best_trend.replace("_trend", "")} Search Interest', fontsize=10)
-        ax3.set_ylabel('CPI Year-over-Year % Change', fontsize=10)
-        ax3.set_title(f'Scatter Plot: {best_trend.replace("_trend", "")} vs CPI YoY\n'
-                     f'Correlation: {corr_with_yoy[best_trend]:.3f}', 
-                     fontsize=12, fontweight='bold')
-        ax3.grid(True, alpha=0.3)
-        
-        # Add trend line
+
+        ax_sc.scatter(
+            self.merged_data[best_trend],
+            self.merged_data['CPI_YoY'],
+            alpha=0.6,
+            s=50
+        )
+        ax_sc.set_xlabel(f'{best_trend.replace("_trend", "").replace("_", " ")} (search index, rel. units)')
+        ax_sc.set_ylabel('CPI YoY %')
+        ax_sc.set_title(
+            f'Scatter: {best_trend.replace("_trend", "").replace("_", " ")} vs CPI YoY  |  r = {corr_with_yoy[best_trend]:.3f}',
+            fontsize=12,
+            fontweight='bold'
+        )
+
         z = np.polyfit(self.merged_data[best_trend], self.merged_data['CPI_YoY'], 1)
         p = np.poly1d(z)
-        ax3.plot(self.merged_data[best_trend], p(self.merged_data[best_trend]), 
-                "r--", alpha=0.8, linewidth=2)
-        
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Visualization saved to: {save_path}")
-        
-        plt.show()
+        xs = self.merged_data[best_trend]
+        ax_sc.plot(xs, p(xs), "r--", alpha=0.8, linewidth=2)
+        ax_sc.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        plt.savefig(results_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved: {results_path}")
+        plt.close(fig)
     
+    def plot_small_multiples(self, save_path='results/fig_timeseries_small_multiples.png'):
+        """
+        Graph 1 as its own figure: CPI YoY (left axis) vs each search term (right axis)
+        in separate panels. Saves a high-DPI PNG.
+        """
+        if self.merged_data is None:
+            raise ValueError("Data must be merged before plotting")
+
+        results_path = Path(save_path)
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+
+        trend_cols = [c for c in self.merged_data.columns if c.endswith('_trend')]
+        if not trend_cols:
+            raise ValueError("No *_trend columns found")
+
+        fig, axes = plt.subplots(
+            nrows=len(trend_cols),
+            ncols=1,
+            figsize=(12, 3.2 * len(trend_cols)),
+            sharex=True
+        )
+        if len(trend_cols) == 1:
+            axes = [axes]
+
+        for ax, col in zip(axes, trend_cols):
+            # CPI on left axis
+            ax.plot(
+                self.merged_data.index,
+                self.merged_data['CPI_YoY'],
+                linewidth=2,
+                label='CPI YoY %',
+                color='tab:blue'
+            )
+            ax.set_ylabel("CPI YoY %")
+            ax.grid(True, alpha=0.25)
+
+            # Search interest normalized to 0–10 on right axis
+            s = self.merged_data[col]
+            norm = (s - s.min()) / (s.max() - s.min() + 1e-9) * 10.0
+
+            ax2 = ax.twinx()
+            ax2.plot(
+                self.merged_data.index,
+                norm,
+                linewidth=1.8,
+                linestyle="--",
+                alpha=0.85,
+                label=col.replace('_trend', '').replace('_', ' ')
+            )
+            ax2.set_ylabel("Search index (0–10)")
+
+            ax.legend(loc="upper left", frameon=False)
+            ax2.legend(loc="upper right", frameon=False)
+
+        axes[-1].set_xlabel("Date")
+        fig.suptitle("CPI vs Google Trends (Small Multiples)", y=0.995)
+        fig.tight_layout()
+        fig.savefig(results_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved: {results_path}")
+        plt.close(fig)
+
     def save_data(self, filepath='merged_inflation_data.csv'):
         """
         Save the merged dataset to a CSV file.
@@ -516,7 +560,8 @@ def main():
             correlations = model.calculate_correlations()
             
             # Create visualizations
-            model.visualize_correlations(save_path='correlation_analysis.png')
+            model.visualize_correlations(save_path='results/fig_corr_heatmap_scatter.png')
+            model.plot_small_multiples(save_path='results/fig_timeseries_small_multiples.png')
             
             # Save merged dataset
             model.save_data(filepath='merged_inflation_data.csv')
@@ -534,7 +579,8 @@ def main():
             best_corr = correlations.loc[best_predictor, 'CPI_YoY']
             print(f"    {best_predictor.replace('_trend', '')}: {best_corr:.3f}")
             print(f"\n  • All correlation results saved to 'correlation_results.csv'")
-            print(f"  • Visualizations saved to 'correlation_analysis.png'")
+            print(f"  • Correlation heatmap & scatter saved to 'results/fig_corr_heatmap_scatter.png'")
+            print(f"  • Small multiples chart saved to 'results/fig_timeseries_small_multiples.png'")
             print(f"  • Merged data saved to 'merged_inflation_data.csv'")
         
     except Exception as e:
@@ -545,3 +591,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
