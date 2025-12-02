@@ -10,6 +10,8 @@ to identify early warning signals of inflation.
 """
 
 import os
+import matplotlib
+matplotlib.use('Agg')
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,6 +26,9 @@ import time
 import warnings
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from pycaret.regression import setup, compare_models, pull, save_model
+
+
 warnings.filterwarnings('ignore')
 
 # Set style for better-looking plots
@@ -792,14 +797,54 @@ class InflationEarlyWarningModel:
         print(f"✓ Saved: {results_path}")
 
         return {
-            'lags': lag_map,
-            'rmse_model': rmse_model,
-            'rmse_last_month': rmse_last_month,
-            'rmse_seasonal': rmse_seasonal,
-            'diracc_model': diracc_model,
-            'diracc_last_month': diracc_last_month,
-            'diracc_seasonal': diracc_seasonal,
-        }
+        'lags': lag_map,
+        'rmse_model': rmse_model,
+        'rmse_last_month': rmse_last_month,
+        'rmse_seasonal': rmse_seasonal,
+        'diracc_model': diracc_model,
+        'diracc_last_month': diracc_last_month,
+        'diracc_seasonal': diracc_seasonal,
+    }
+
+def run_pycaret_on_pca(pca_csv_path: str = "results/pca_dataset_yoy_1m.csv"):
+    """
+    Use PyCaret to train and compare regression models
+    on the PCA feature dataset for CPI_YoY_future_1m.
+    """
+    print("\n============================================================")
+    print("Running PyCaret regression on PCA features...")
+    print("============================================================")
+
+    df = pd.read_csv(pca_csv_path)
+
+    for col in ["date", "CPI_MoM", "CPI_YoY"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
+    target_col = "CPI_YoY_future_1m"
+    if target_col not in df.columns:
+        raise ValueError(f"Target column '{target_col}' not found in {pca_csv_path}")
+
+    exp = setup(
+        data=df,
+        target=target_col,
+        train_size=0.8,
+        fold=5,
+        fold_shuffle=True,
+        session_id=42,
+        verbose=False,   # no 'silent' arg
+    )
+# Try a bunch of models and pick the best by default metric (RMSE)
+    best_model = compare_models()
+
+    print("\nTop models leaderboard:")
+    leaderboard = pull()
+    print(leaderboard.head(10))
+
+    Path("results").mkdir(parents=True, exist_ok=True)
+    save_model(best_model, "results/best_pycaret_model_yoy_1m")
+    print("\n✓ Saved best PyCaret model to 'results/best_pycaret_model_yoy_1m.pkl'")
+
 
 def main():
     """
@@ -844,7 +889,7 @@ def main():
                 keywords=search_terms,
                 start_date='2010-01-01'
             )
-            model.build_food_index(FOOD_TERMS, drop_components=False)
+            model.build_food_index(FOOD_TERMS, drop_components=True)
             trends_success = True
         except Exception as trends_error:
             print(f"\n⚠️  Google Trends unavailable: {trends_error}")
@@ -891,7 +936,8 @@ def main():
             model.merge_datasets()
 
             # Add more columns (future CPI targets, CPI lags, trend leads)
-            model.build_feature_matrix(horizon_months=3)
+            # AFTER: 1-month ahead targets instead of 3-month
+            model.build_feature_matrix(horizon_months=1)
 
             # Calculate correlations (still just using the base *_trend columns)
             correlations = model.calculate_correlations()
@@ -910,16 +956,16 @@ def main():
             # --- PCA step: build dataset for modeling (e.g., for PyCaret) ---
             Path('results').mkdir(parents=True, exist_ok=True)
 
-            # Forecast target: CPI YoY 3 months ahead
-            pca_target = "CPI_YoY_future_3m"
+            # Forecast target: CPI YoY 1 month ahead
+            pca_target = "CPI_YoY_future_1m"
 
             df_pca = model.build_pca_dataset(
                 target_col=pca_target,
                 variance_threshold=0.95,
-                save_explained_path='results/pca_explained_variance_yoy_3m.csv'
+                save_explained_path='results/pca_explained_variance_yoy_1m.csv'
             )
-            df_pca.to_csv('results/pca_dataset_yoy_3m.csv')
-            print("✓ PCA dataset saved to: results/pca_dataset_yoy_3m.csv")
+            df_pca.to_csv('results/pca_dataset_yoy_1m.csv')
+            print("✓ PCA dataset saved to: results/pca_dataset_yoy_1m.csv")
 
             model.lead_lag_correlations(ks=(0,1,2,3), targets=('CPI_MoM','CPI_YoY'),
                             save_path='results/lead_corr.csv')
@@ -935,8 +981,11 @@ def main():
                 path = f"results/nowcast_r3_g{conf['gas_prices_trend']}.csv"
                 res = model.nowcast_yoy_custom(lag_map=conf, test_start='2019-01-01', save_path=path)
                 results.append(res)
-            
-            
+
+            # Run PyCaret on the PCA dataset
+            run_pycaret_on_pca("results/pca_dataset_yoy_1m.csv")
+
+
             print("\n" + "=" * 60)
             print("Analysis Complete!")
             print("=" * 60)
@@ -950,6 +999,7 @@ def main():
             print(f"  • Small multiples chart saved to 'results/fig_cpi_vs_trends_small_multiples.png'")
             print(f"  • Merged data saved to 'merged_inflation_data.csv'")
         
+
     except Exception as e:
         print(f"\n❌ Error during execution: {e}")
         import traceback
@@ -958,4 +1008,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
