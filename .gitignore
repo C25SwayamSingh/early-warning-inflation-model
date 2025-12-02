@@ -2,3 +2,7 @@
 data/
 results/
 logs.log
+# Python cache
+__pycache__/
+*.pyc
+
